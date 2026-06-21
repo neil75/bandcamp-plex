@@ -4,7 +4,8 @@ __pycache__/
 .venv/
 venv/
 .env
-config/
+cookies.txt
+state.json
 downloads/
 *.log
 .DS_Store

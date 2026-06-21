@@ -1,0 +1,30 @@
+[Unit]
+Description=Bandcamp → Plex music sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bandcamp-plex
+Group=bandcamp-plex
+
+EnvironmentFile=/etc/bandcamp-plex/bandcamp-plex.conf
+
+ExecStart=/opt/bandcamp-plex/venv/bin/python -m src
+WorkingDirectory=/opt/bandcamp-plex
+
+Restart=on-failure
+RestartSec=30
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/bandcamp-plex /var/tmp/bandcamp-plex
+# The music directory needs to be writable — the install script adds it here
+# dynamically, but a manual override may be needed if MUSIC_DIR differs.
+ReadWritePaths=/srv/music
+
+[Install]
+WantedBy=multi-user.target

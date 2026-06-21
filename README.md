@@ -1,11 +1,11 @@
 # bandcamp-plex
 
-A small service that periodically checks your [Bandcamp](https://bandcamp.com)
+A service that periodically checks your [Bandcamp](https://bandcamp.com)
 fan collection against a Plex music library, downloads anything that's missing,
 unzips it into the Plex music directory, and asks Plex to rescan.
 
-Designed to run as a Docker container on an Unraid server (or anywhere Docker
-runs).
+Runs as a native systemd service — designed for a Raspberry Pi but works on any
+Debian/Ubuntu-based Linux system.
 
 ---
 
@@ -13,14 +13,16 @@ runs).
 
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
-- [Quick start (Docker Compose)](#quick-start-docker-compose)
-- [Unraid setup](#unraid-setup)
+- [Quick start](#quick-start)
 - [Getting your `cookies.txt`](#getting-your-cookiestxt)
 - [Getting a Plex token](#getting-a-plex-token)
 - [Configuration](#configuration)
+- [Managing the service](#managing-the-service)
 - [File layout on disk](#file-layout-on-disk)
 - [How matching works](#how-matching-works)
 - [Logs and troubleshooting](#logs-and-troubleshooting)
+- [Updating](#updating)
+- [Uninstalling](#uninstalling)
 - [Development](#development)
 - [FAQ](#faq)
 - [Caveats](#caveats)
@@ -48,75 +50,59 @@ On each sync iteration the service:
    library section so the new music shows up in your clients.
 
 The service then sleeps for `CHECK_INTERVAL` seconds and repeats. It handles
-`SIGTERM`/`SIGINT` cleanly so `docker stop` won't corrupt an in-progress
+`SIGTERM`/`SIGINT` cleanly so `systemctl stop` won't corrupt an in-progress
 download.
 
 ---
 
 ## Requirements
 
-- Docker (or Docker Compose). Tested with Docker 24+.
+- **Raspberry Pi** (or any Debian/Ubuntu-based Linux machine) with Python 3.10+
+  and `python3-venv` installed.
 - A Bandcamp fan account with at least one purchase.
 - A Plex Media Server with a Music library (optional — the service also
   works with a filesystem-only setup).
-- Network access from the container to `bandcamp.com` and your Plex server.
+- Network access to `bandcamp.com` and your Plex server.
+
+On Raspberry Pi OS (Bookworm), the dependencies are pre-installed. On older
+versions you may need:
+
+```bash
+sudo apt update && sudo apt install python3 python3-venv python3-pip
+```
 
 ---
 
-## Quick start (Docker Compose)
+## Quick start
 
 ```bash
 git clone https://github.com/neil75/bandcamp-plex.git
 cd bandcamp-plex
 
-# 1. Create your config directory and drop your cookies.txt in it.
-mkdir -p config downloads
-cp /path/to/exported/cookies.txt config/cookies.txt
+# 1. Run the install script (creates user, venv, systemd unit, directories).
+sudo ./install.sh
 
-# 2. Edit docker-compose.yml to point /music at your Plex music share
-#    and to set BANDCAMP_USERNAME / PLEX_URL / PLEX_TOKEN.
-$EDITOR docker-compose.yml
+# 2. Drop your Bandcamp cookies into the config directory.
+sudo cp /path/to/exported/cookies.txt /etc/bandcamp-plex/cookies.txt
+sudo chown bandcamp-plex:bandcamp-plex /etc/bandcamp-plex/cookies.txt
 
-# 3. Build and start the container.
-docker compose up -d --build
+# 3. Edit the config — at minimum set BANDCAMP_USERNAME.
+sudo nano /etc/bandcamp-plex/bandcamp-plex.conf
 
-# 4. Follow the logs to watch the first sync.
-docker compose logs -f
+# 4. Make sure the music directory exists and is writable by the service.
+#    Change the path to match MUSIC_DIR in your config.
+sudo mkdir -p /srv/music
+sudo chown bandcamp-plex:bandcamp-plex /srv/music
+
+# 5. Start the service.
+sudo systemctl start bandcamp-plex
+
+# 6. Follow the logs.
+journalctl -u bandcamp-plex -f
 ```
 
 The first sync walks your entire Bandcamp collection, so expect it to take a
 while on large libraries. Subsequent syncs only act on new purchases.
-
----
-
-## Unraid setup
-
-The included `docker-compose.yml` is tuned for Unraid:
-
-- Runs as `user: "99:100"` (the standard `nobody:users` owner of `/mnt/user`
-  shares) so extracted files have the right ownership for Plex.
-- Mounts `/mnt/user/music` as the target music directory. Change this to
-  whatever path your Plex music library actually lives at on the array.
-
-Steps:
-
-1. Clone this repo to `/mnt/user/appdata/bandcamp-plex` (or wherever you keep
-   compose stacks).
-2. Create `config/cookies.txt` inside that directory — this is how the
-   container authenticates to Bandcamp.
-3. Edit `docker-compose.yml`:
-   - `BANDCAMP_USERNAME` — your Bandcamp fan username.
-   - `PLEX_URL` — usually `http://<unraid-ip>:32400`.
-   - `PLEX_TOKEN` — see [below](#getting-a-plex-token).
-   - `PLEX_LIBRARY` — the exact name of your Plex music library section
-     (e.g. `"Music"`).
-   - The `/music` volume — point it at your music share
-     (`/mnt/user/music` by default).
-4. `docker compose up -d --build`.
-
-If you'd rather run it from the Unraid Docker UI instead of compose, create a
-container using the image built from this Dockerfile and wire up the same
-environment variables and volume mounts by hand.
 
 ---
 
@@ -131,16 +117,21 @@ standard Netscape `cookies.txt`:
    - [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome/Edge)
    - [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) (Firefox)
 3. Navigate to `bandcamp.com` and export cookies for that domain.
-4. Save the file as `config/cookies.txt` inside the compose directory (the
-   service mounts that directory to `/config` inside the container).
+4. Copy the file to `/etc/bandcamp-plex/cookies.txt` on the Pi:
+   ```bash
+   scp cookies.txt pi@<pi-address>:/tmp/
+   # Then on the Pi:
+   sudo cp /tmp/cookies.txt /etc/bandcamp-plex/cookies.txt
+   sudo chown bandcamp-plex:bandcamp-plex /etc/bandcamp-plex/cookies.txt
+   sudo chmod 600 /etc/bandcamp-plex/cookies.txt
+   ```
 
 Cookies expire. If the service starts logging messages like *"cookies are
 probably not for a logged-in session"*, repeat the export.
 
 > **Security note:** `cookies.txt` gives full access to your Bandcamp account.
-> Treat it like a password — don't commit it, share it, or put it in a public
-> image. The `.gitignore` and `.dockerignore` already exclude the `config/`
-> directory.
+> Treat it like a password. The install script sets `/etc/bandcamp-plex` to be
+> owned by and readable only by the `bandcamp-plex` service user.
 
 ---
 
@@ -162,32 +153,83 @@ already there, and relies on Plex's own periodic scan to pick up new music.
 
 ## Configuration
 
-All configuration is via environment variables. The only strictly required
-one is `BANDCAMP_USERNAME` — everything else has sensible defaults baked into
-the Docker image. A copy-pasteable template lives in `.env.example`.
+All configuration lives in `/etc/bandcamp-plex/bandcamp-plex.conf`, which is a
+standard systemd `EnvironmentFile` (one `KEY=value` per line). A commented
+template is installed automatically by `install.sh` and is also available as
+`.env.example` in this repo.
+
+The only strictly required setting is `BANDCAMP_USERNAME`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BANDCAMP_USERNAME` | *(required)* | The username from `https://bandcamp.com/<username>` — this is the fan account to sync. |
-| `BANDCAMP_COOKIES_FILE` | `/config/cookies.txt` | Path inside the container to the exported Netscape cookies file. |
+| `BANDCAMP_USERNAME` | *(required)* | The username from `https://bandcamp.com/<username>` — the fan account to sync. |
+| `BANDCAMP_COOKIES_FILE` | `/etc/bandcamp-plex/cookies.txt` | Path to the exported Netscape cookies file. |
 | `BANDCAMP_FORMAT` | `flac` | Preferred audio format. Options: `flac`, `alac`, `wav`, `aiff-lossless`, `mp3-v0`, `mp3-320`, `vorbis`, `aac-hi`. Falls back through that list if the preferred format isn't offered for a given release. |
-| `PLEX_URL` | *(unset)* | Base URL of your Plex server, e.g. `http://plex:32400`. If unset, Plex integration is disabled. |
+| `PLEX_URL` | *(unset)* | Base URL of your Plex server, e.g. `http://localhost:32400`. If unset, Plex integration is disabled. |
 | `PLEX_TOKEN` | *(unset)* | Plex `X-Plex-Token`. Required when `PLEX_URL` is set. |
 | `PLEX_LIBRARY` | `Music` | Name of the Plex library section to match against and rescan. |
-| `MUSIC_DIR` | `/music` | Where to install downloaded albums. Mount your Plex music library here. |
-| `DOWNLOAD_DIR` | `/downloads` | Scratch space for zip files before unpacking. Can be ephemeral. |
-| `STATE_FILE` | `/config/state.json` | Persistent record of items already synced. Keep this alongside `cookies.txt`. |
-| `CHECK_INTERVAL` | `3600` | Seconds between sync runs. Set to `0` to run exactly once and exit (useful for cron-driven setups). |
+| `MUSIC_DIR` | `/srv/music` | Where to install downloaded albums. Point this at the same directory Plex uses as its music library root. |
+| `DOWNLOAD_DIR` | `/var/tmp/bandcamp-plex` | Scratch space for zip files before unpacking. Files are deleted after extraction. |
+| `STATE_FILE` | `/var/lib/bandcamp-plex/state.json` | Persistent record of items already synced. |
+| `CHECK_INTERVAL` | `3600` | Seconds between sync runs. Set to `0` to run exactly once and exit (useful with a cron job or `systemctl start --no-block`). |
 | `DRY_RUN` | `false` | When true, logs which items would be downloaded but doesn't touch the library. Good for a first look. |
-| `TZ` | `Etc/UTC` | Timezone for log timestamps. |
 
-### Volumes
+### Directories
 
-| Mount | Purpose |
-| --- | --- |
-| `/config` | Holds `cookies.txt` and `state.json`. **Persist this.** |
-| `/music` | Your Plex music library root. Albums are installed as `Artist/Album/`. |
-| `/downloads` | Scratch space. Files are deleted after successful extraction; safe to make ephemeral. |
+| Path | Purpose | Created by |
+| --- | --- | --- |
+| `/etc/bandcamp-plex/` | Config (`bandcamp-plex.conf`) and credentials (`cookies.txt`). | `install.sh` |
+| `/opt/bandcamp-plex/` | Application code and Python venv. | `install.sh` |
+| `/var/lib/bandcamp-plex/` | Persistent state (`state.json`). | `install.sh` |
+| `/var/tmp/bandcamp-plex/` | Scratch space for zip downloads. | `install.sh` |
+| `/srv/music` (default) | Your Plex music library root. You must create this yourself if it doesn't exist. | You |
+
+### Changing MUSIC_DIR
+
+If your Plex music library lives somewhere other than `/srv/music` (e.g.
+`/media/usb/music` on an external drive), update **two** places:
+
+1. `MUSIC_DIR` in `/etc/bandcamp-plex/bandcamp-plex.conf`.
+2. The `ReadWritePaths=` line in `/etc/systemd/system/bandcamp-plex.service` —
+   replace `/srv/music` with your path. Then reload:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart bandcamp-plex
+   ```
+
+---
+
+## Managing the service
+
+```bash
+# Start / stop / restart
+sudo systemctl start bandcamp-plex
+sudo systemctl stop bandcamp-plex
+sudo systemctl restart bandcamp-plex
+
+# Check status
+systemctl status bandcamp-plex
+
+# Follow live logs
+journalctl -u bandcamp-plex -f
+
+# See logs from the last sync
+journalctl -u bandcamp-plex --since "1 hour ago"
+
+# Run a one-shot dry-run sync (useful for testing)
+sudo -u bandcamp-plex \
+  BANDCAMP_USERNAME=yourname \
+  BANDCAMP_COOKIES_FILE=/etc/bandcamp-plex/cookies.txt \
+  MUSIC_DIR=/srv/music \
+  STATE_FILE=/var/lib/bandcamp-plex/state.json \
+  DOWNLOAD_DIR=/var/tmp/bandcamp-plex \
+  CHECK_INTERVAL=0 \
+  DRY_RUN=true \
+  /opt/bandcamp-plex/venv/bin/python -m src
+
+# Disable the service from starting at boot
+sudo systemctl disable bandcamp-plex
+```
 
 ---
 
@@ -196,7 +238,7 @@ the Docker image. A copy-pasteable template lives in `.env.example`.
 After a successful sync, a newly purchased album lands at:
 
 ```
-/music/
+/srv/music/
 └── <Artist>/
     └── <Album>/
         ├── 01 Track One.flac
@@ -237,7 +279,7 @@ matching work.
 ## Logs and troubleshooting
 
 ```bash
-docker compose logs -f bandcamp-plex
+journalctl -u bandcamp-plex -f
 ```
 
 Common messages:
@@ -249,8 +291,8 @@ Common messages:
   doesn't offer your preferred format; the next-best option was picked.
 - **`Bandcamp profile blob had no fan_id`** — your cookies aren't logged in.
   Re-export `cookies.txt`.
-- **`Bandcamp cookies file not found at /config/cookies.txt`** — check that
-  the `config/` volume is mounted and contains `cookies.txt`.
+- **`Bandcamp cookies file not found at /etc/bandcamp-plex/cookies.txt`** —
+  the cookies file is missing. Export it from your browser and copy it over.
 - **`Plex API query failed; falling back to filesystem scan`** — `PLEX_URL`
   or `PLEX_TOKEN` is wrong, or Plex is unreachable. The sync still runs using
   a filesystem scan as the source of truth.
@@ -258,8 +300,35 @@ Common messages:
   extraction failed; the item stays unmarked and will be retried on the next
   iteration.
 
-If something misbehaves, set `DRY_RUN=true` and rerun — you'll see exactly
-what the service thinks needs downloading without any writes to the library.
+If something misbehaves, set `DRY_RUN=true` in the config, restart the
+service, and check the logs to see what it *would* download without touching
+your library.
+
+---
+
+## Updating
+
+```bash
+cd bandcamp-plex    # wherever you cloned the repo
+git pull
+sudo ./install.sh   # re-copies source + reinstalls deps
+sudo systemctl restart bandcamp-plex
+```
+
+The install script does not overwrite your existing config in
+`/etc/bandcamp-plex/bandcamp-plex.conf`, so your settings are preserved.
+
+---
+
+## Uninstalling
+
+```bash
+# Keeps config and state (cookies, state.json)
+sudo ./uninstall.sh
+
+# Or remove everything
+sudo ./uninstall.sh --purge
+```
 
 ---
 
@@ -269,39 +338,40 @@ The service is a small pure-Python project with three runtime dependencies:
 `requests`, `beautifulsoup4`, and `plexapi`.
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run it directly (outside Docker). Requires the env vars above.
+# Run locally with env vars.
 export BANDCAMP_USERNAME=yourname
-export BANDCAMP_COOKIES_FILE=./config/cookies.txt
-export MUSIC_DIR=./music
-export DOWNLOAD_DIR=./downloads
-export STATE_FILE=./config/state.json
+export BANDCAMP_COOKIES_FILE=./cookies.txt
+export MUSIC_DIR=./test-music
+export DOWNLOAD_DIR=./test-downloads
+export STATE_FILE=./test-state.json
 export CHECK_INTERVAL=0
 export DRY_RUN=true
 python -m src
 ```
 
-### Layout
+### Project layout
 
 ```
-src/
-├── __init__.py
-├── __main__.py      # `python -m src` entry point
-├── main.py          # sync loop + signal handling
-├── config.py        # env → Config dataclass
-├── bandcamp.py      # fan collection scraper + download URL resolver
-├── plex_client.py   # plexapi + filesystem matchers, rescan trigger
-├── downloader.py    # streaming download, safe zip extraction
-└── state.py         # JSON-backed set of synced item keys
-```
-
-### Building the image
-
-```bash
-docker build -t bandcamp-plex:dev .
+bandcamp-plex/
+├── src/
+│   ├── __init__.py
+│   ├── __main__.py      # python -m src entry point
+│   ├── main.py          # sync loop + signal handling
+│   ├── config.py        # env → Config dataclass
+│   ├── bandcamp.py      # fan collection scraper + download URL resolver
+│   ├── plex_client.py   # plexapi + filesystem matchers, rescan trigger
+│   ├── downloader.py    # streaming download, safe zip extraction
+│   └── state.py         # JSON-backed set of synced item keys
+├── bandcamp-plex.service  # systemd unit
+├── install.sh             # install/upgrade script
+├── uninstall.sh           # removal script
+├── requirements.txt
+├── .env.example           # config template
+└── README.md
 ```
 
 ---
@@ -316,8 +386,7 @@ periodic scan will then pick up anything the service adds.
 **Will this re-download my entire library every time?**
 No. Items are recorded in `state.json` after the first successful sync (or
 even after a match against Plex), so subsequent runs are near-instant for
-everything that's already present. Mount `/config` on persistent storage to
-keep that state across container restarts.
+everything that's already present.
 
 **What if the preferred format isn't available for a release?**
 The service walks a fallback list (`flac` → `alac` → `wav` →
@@ -339,6 +408,17 @@ disabled). The next sync iteration will re-download it.
 Every `CHECK_INTERVAL` seconds (default 1 hour). Set `CHECK_INTERVAL=0` to
 run exactly once and exit — useful for cron-style scheduling.
 
+**Can I store music on a USB drive?**
+Absolutely. Set `MUSIC_DIR` in the config to the mount point of your drive
+(e.g. `/media/usb/music`) and update the `ReadWritePaths=` line in the
+systemd unit to match. Make sure the drive is mounted before the service
+starts — you can add `RequiresMountsFor=/media/usb` to the `[Unit]` section
+of the service file.
+
+**Does it run at boot?**
+Yes. The install script enables the service so it starts automatically.
+Disable with `sudo systemctl disable bandcamp-plex`.
+
 ---
 
 ## Caveats
@@ -351,10 +431,15 @@ run exactly once and exit — useful for cron-style scheduling.
 - **Cookie-based auth.** There's no way around this today. Cookies expire;
   re-export when you see auth errors. Keep `cookies.txt` private.
 - **One fan account at a time.** The service syncs a single
-  `BANDCAMP_USERNAME`. Run multiple containers with different `/config`
-  volumes if you need to sync more than one account.
+  `BANDCAMP_USERNAME`. Create multiple service instances (copy the unit file
+  with a different name and point it at a separate config) if you need to sync
+  more than one account.
 - **Unique albums.** Matching is name-based, so two different albums with
   identical names will collide. This is rare in practice but worth knowing.
+- **SD card wear.** On a Raspberry Pi with an SD card root filesystem, heavy
+  downloading writes a lot of data. Consider pointing `DOWNLOAD_DIR` at a
+  tmpfs or external drive to avoid wearing out the card. The state file is
+  small and writes infrequently, so it's fine on the SD card.
 - **Respect Bandcamp.** Only download things you actually own. This tool
   exists to make managing a legitimately-purchased collection easier, not to
   bypass any paywall.
@@ -364,4 +449,4 @@ run exactly once and exit — useful for cron-style scheduling.
 ## License
 
 No license file is included; add one before publishing if you plan to share
-the image.
+the code.

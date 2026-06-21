@@ -35,15 +35,25 @@ class Config:
         return cls(
             bandcamp_username=required("BANDCAMP_USERNAME"),
             bandcamp_cookies_file=Path(
-                os.environ.get("BANDCAMP_COOKIES_FILE", "/config/cookies.txt")
+                os.environ.get(
+                    "BANDCAMP_COOKIES_FILE",
+                    "/etc/bandcamp-plex/cookies.txt",
+                )
             ),
             bandcamp_format=os.environ.get("BANDCAMP_FORMAT", "flac"),
             plex_url=os.environ.get("PLEX_URL") or None,
             plex_token=os.environ.get("PLEX_TOKEN") or None,
             plex_library=os.environ.get("PLEX_LIBRARY", "Music"),
-            music_dir=Path(os.environ.get("MUSIC_DIR", "/music")),
-            download_dir=Path(os.environ.get("DOWNLOAD_DIR", "/downloads")),
-            state_file=Path(os.environ.get("STATE_FILE", "/config/state.json")),
+            music_dir=Path(os.environ.get("MUSIC_DIR", "/srv/music")),
+            download_dir=Path(
+                os.environ.get("DOWNLOAD_DIR", "/var/tmp/bandcamp-plex")
+            ),
+            state_file=Path(
+                os.environ.get(
+                    "STATE_FILE",
+                    "/var/lib/bandcamp-plex/state.json",
+                )
+            ),
             check_interval=int(os.environ.get("CHECK_INTERVAL", "3600")),
             dry_run=_bool(os.environ.get("DRY_RUN")),
         )
