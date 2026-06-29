@@ -16,15 +16,13 @@ WorkingDirectory=/opt/bandcamp-plex
 Restart=on-failure
 RestartSec=30
 
-# Hardening
+# Hardening — ProtectSystem=full protects /usr and /boot but leaves /srv,
+# /var, /media, /mnt writable so MUSIC_DIR doesn't need to exist at unit
+# load time and external drives work without extra ReadWritePaths config.
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/bandcamp-plex /var/tmp/bandcamp-plex
-# The music directory needs to be writable — the install script adds it here
-# dynamically, but a manual override may be needed if MUSIC_DIR differs.
-ReadWritePaths=/srv/music
 
 [Install]
 WantedBy=multi-user.target

@@ -236,15 +236,15 @@ The only strictly required setting is `BANDCAMP_USERNAME`.
 ### Changing MUSIC_DIR
 
 If your Plex music library lives somewhere other than `/srv/music` (e.g.
-`/media/usb/music` on an external drive), update **two** places:
+`/media/usb/music` on an external drive), just update `MUSIC_DIR` in
+`/etc/bandcamp-plex/bandcamp-plex.conf` and restart:
 
-1. `MUSIC_DIR` in `/etc/bandcamp-plex/bandcamp-plex.conf`.
-2. The `ReadWritePaths=` line in `/etc/systemd/system/bandcamp-plex.service` —
-   replace `/srv/music` with your path. Then reload:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart bandcamp-plex
-   ```
+```bash
+sudo systemctl restart bandcamp-plex
+```
+
+No changes to the systemd unit are needed — the service has write access to
+`/srv`, `/var`, `/media`, `/mnt`, and other standard data directories.
 
 ---
 
