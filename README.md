@@ -109,15 +109,28 @@ while on large libraries. Subsequent syncs only act on new purchases.
 ## Getting your `cookies.txt`
 
 Bandcamp doesn't expose a public API for purchased items, so this service
-authenticates by reusing your browser's session cookies. Export them as a
-standard Netscape `cookies.txt`:
+authenticates by reusing your browser's session cookies. This repo includes
+two helper scripts so you **don't need to install any browser extension**.
 
-1. Log in to [bandcamp.com](https://bandcamp.com) in a regular browser.
-2. Install a cookies-exporter extension. Any of these work:
-   - [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome/Edge)
-   - [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) (Firefox)
-3. Navigate to `bandcamp.com` and export cookies for that domain.
-4. Copy the file to `/etc/bandcamp-plex/cookies.txt` on the Pi:
+### Option A — Dev tools copy/paste (any browser)
+
+This is the safest approach — no extensions, no file-system access, works in
+Chrome, Edge, Firefox, or any browser with dev tools.
+
+1. Log in to [bandcamp.com](https://bandcamp.com).
+2. Press **F12** to open dev tools.
+   - **Chrome / Edge:** go to the **Application** tab → **Cookies** →
+     `https://bandcamp.com`.
+   - **Firefox:** go to the **Storage** tab → **Cookies** →
+     `https://bandcamp.com`.
+3. Run the helper script (on your desktop, not the Pi):
+   ```bash
+   python3 extract-cookies.py
+   ```
+   It will prompt you for each cookie value — just copy/paste from the dev
+   tools **Value** column. Only `identity` is required; the rest improve
+   reliability.
+4. Copy the resulting `cookies.txt` to the Pi:
    ```bash
    scp cookies.txt pi@<pi-address>:/tmp/
    # Then on the Pi:
@@ -126,8 +139,34 @@ standard Netscape `cookies.txt`:
    sudo chmod 600 /etc/bandcamp-plex/cookies.txt
    ```
 
+### Option B — Firefox SQLite extraction (Linux / macOS)
+
+If you use Firefox on a Linux or macOS desktop, you can extract cookies
+directly from its profile database with zero manual copying:
+
+```bash
+# Requires sqlite3 — install with:  sudo apt install sqlite3
+./extract-cookies-firefox.sh
+```
+
+The script auto-detects your Firefox profile, reads the `cookies.sqlite`
+database (read-only copy), filters for Bandcamp cookies, and writes
+`cookies.txt`. Then `scp` it to the Pi as in Option A step 4.
+
+### Option C — Browser extension (if you prefer)
+
+If you'd rather use an extension, any Netscape `cookies.txt` exporter works:
+- [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome/Edge)
+- [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) (Firefox)
+
+Navigate to `bandcamp.com` and export cookies for that domain, then copy the
+file to the Pi as in Option A step 4.
+
+---
+
 Cookies expire. If the service starts logging messages like *"cookies are
-probably not for a logged-in session"*, repeat the export.
+probably not for a logged-in session"*, repeat the export using whichever
+method you prefer.
 
 > **Security note:** `cookies.txt` gives full access to your Bandcamp account.
 > Treat it like a password. The install script sets `/etc/bandcamp-plex` to be
@@ -366,11 +405,13 @@ bandcamp-plex/
 │   ├── plex_client.py   # plexapi + filesystem matchers, rescan trigger
 │   ├── downloader.py    # streaming download, safe zip extraction
 │   └── state.py         # JSON-backed set of synced item keys
-├── bandcamp-plex.service  # systemd unit
-├── install.sh             # install/upgrade script
-├── uninstall.sh           # removal script
+├── bandcamp-plex.service       # systemd unit
+├── install.sh                  # install/upgrade script
+├── uninstall.sh                # removal script
+├── extract-cookies.py          # build cookies.txt from dev-tools values
+├── extract-cookies-firefox.sh  # extract cookies from Firefox SQLite DB
 ├── requirements.txt
-├── .env.example           # config template
+├── .env.example                # config template
 └── README.md
 ```
 
