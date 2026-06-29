@@ -174,19 +174,29 @@ method you prefer.
 
 ---
 
-## Getting a Plex token
+## Getting a Plex token (optional)
 
-Plex's auth token is what lets the service query your library and trigger
-rescans. Follow the official guide:
+A Plex token lets the service authenticate to Plex servers that require it.
+**If your Plex server allows unauthenticated local access** (the default for
+most home setups), you can skip the token entirely — just set `PLEX_URL` and
+leave `PLEX_TOKEN` empty.
 
-https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+If you do need a token, the easiest ways to find it:
 
-The short version: open any media item in the Plex web UI, click "Get Info" →
-"View XML", and copy the `X-Plex-Token` query parameter from the resulting URL.
+- **Via app.plex.tv:** open `app.plex.tv` in a browser, play any item, click
+  `...` → **Get Info** → **View XML**. The URL will end with
+  `?X-Plex-Token=xxxxxxxxxxxx`.
+- **Via browser dev tools:** open your local Plex URL, press F12 → **Network**
+  tab, click around in your library, and look for `X-Plex-Token` in the
+  request URLs or headers.
+- **From the Plex config on the server:** if Plex runs on the same machine:
+  ```bash
+  grep PlexOnlineToken "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"
+  ```
 
-Plex integration is **optional**. If you leave `PLEX_URL` and `PLEX_TOKEN`
-unset, the service falls back to scanning `MUSIC_DIR` on disk to decide what's
-already there, and relies on Plex's own periodic scan to pick up new music.
+Plex integration is **entirely optional**. If you leave `PLEX_URL` unset, the
+service falls back to scanning `MUSIC_DIR` on disk to decide what's already
+there, and relies on Plex's own periodic scan to pick up new music.
 
 ---
 
@@ -205,7 +215,7 @@ The only strictly required setting is `BANDCAMP_USERNAME`.
 | `BANDCAMP_COOKIES_FILE` | `/etc/bandcamp-plex/cookies.txt` | Path to the exported Netscape cookies file. |
 | `BANDCAMP_FORMAT` | `flac` | Preferred audio format. Options: `flac`, `alac`, `wav`, `aiff-lossless`, `mp3-v0`, `mp3-320`, `vorbis`, `aac-hi`. Falls back through that list if the preferred format isn't offered for a given release. |
 | `PLEX_URL` | *(unset)* | Base URL of your Plex server, e.g. `http://localhost:32400`. If unset, Plex integration is disabled. |
-| `PLEX_TOKEN` | *(unset)* | Plex `X-Plex-Token`. Required when `PLEX_URL` is set. |
+| `PLEX_TOKEN` | *(unset)* | Plex `X-Plex-Token`. Optional — only needed if your Plex server requires authentication for local connections. |
 | `PLEX_LIBRARY` | `Music` | Name of the Plex library section to match against and rescan. |
 | `MUSIC_DIR` | `/srv/music` | Where to install downloaded albums. Point this at the same directory Plex uses as its music library root. |
 | `DOWNLOAD_DIR` | `/var/tmp/bandcamp-plex` | Scratch space for zip files before unpacking. Files are deleted after extraction. |

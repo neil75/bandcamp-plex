@@ -21,7 +21,7 @@ log = logging.getLogger("bandcamp-plex")
 
 
 def build_plex_library(cfg: Config) -> PlexLibrary:
-    if cfg.plex_url and cfg.plex_token:
+    if cfg.plex_url:
         try:
             return load_from_plex_api(cfg.plex_url, cfg.plex_token, cfg.plex_library)
         except Exception:
@@ -72,7 +72,7 @@ def sync_once(cfg: Config, state: State) -> int:
                 item.title,
             )
 
-    if added and cfg.plex_url and cfg.plex_token:
+    if added and cfg.plex_url:
         try:
             refresh_plex_library(cfg.plex_url, cfg.plex_token, cfg.plex_library)
         except Exception:

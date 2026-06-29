@@ -47,10 +47,10 @@ class PlexLibrary:
         return t in self.album_titles
 
 
-def load_from_plex_api(url: str, token: str, library_name: str) -> PlexLibrary:
+def load_from_plex_api(url: str, token: str | None, library_name: str) -> PlexLibrary:
     from plexapi.server import PlexServer  # type: ignore
 
-    server = PlexServer(url, token)
+    server = PlexServer(url, token or "")
     section = server.library.section(library_name)
     lib = PlexLibrary()
     for album in section.searchAlbums():
@@ -75,10 +75,10 @@ def load_from_filesystem(music_dir: Path) -> PlexLibrary:
     return lib
 
 
-def refresh_plex_library(url: str, token: str, library_name: str) -> None:
+def refresh_plex_library(url: str, token: str | None, library_name: str) -> None:
     from plexapi.server import PlexServer  # type: ignore
 
-    server = PlexServer(url, token)
+    server = PlexServer(url, token or "")
     section = server.library.section(library_name)
     section.update()
     log.info("Triggered Plex scan for library %r", library_name)
