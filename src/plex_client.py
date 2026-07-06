@@ -60,10 +60,8 @@ def _fuzzy_match(a: str, b: str) -> bool:
         return False
     if na == nb:
         return True
-    # One is a substring of the other (minimum 4 chars to avoid false positives).
     if len(na) >= 4 and len(nb) >= 4 and (na in nb or nb in na):
         return True
-    # Significant-word overlap.
     wa, wb = tokenize(a), tokenize(b)
     if not wa or not wb:
         return False
@@ -94,6 +92,11 @@ class PlexLibrary:
     _artist_raw_albums: dict[str, list[str]] = field(
         default_factory=lambda: defaultdict(list)
     )
+    _artist_tracks: dict[str, set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+    _has_track_data: bool = False
+
     def add(self, artist: str, title: str) -> None:
         a = normalize(artist)
         t = normalize(title)
@@ -103,32 +106,73 @@ class PlexLibrary:
         self._titles.add(t)
         self._artist_raw_albums[a].append(title)
 
+    def add_track(self, artist: str, track_title: str) -> None:
+        a = normalize(artist)
+        t = normalize(track_title)
+        if a and t:
+            self._artist_tracks[a].add(t)
+            self._has_track_data = True
+
     @property
     def album_count(self) -> int:
         return len(self._exact)
 
-    def contains(self, artist: str, title: str) -> bool:
+    @property
+    def track_count(self) -> int:
+        return sum(len(v) for v in self._artist_tracks.values())
+
+    def contains_album(self, artist: str, title: str) -> bool:
         a = normalize(artist)
         t = normalize(title)
         if not t:
             return False
-        # 1. Exact normalized match.
         if (a, t) in self._exact:
             return True
-        # 2. Title-only exact match (handles artist name differences).
         if t in self._titles:
             return True
-        # 3. Fuzzy album name match within the same artist.
         for raw_album in self._artist_raw_albums.get(a, []):
             if _fuzzy_match(title, raw_album):
                 log.info(
-                    "Fuzzy match: Bandcamp '%s' ≈ Plex '%s' (artist: %s)",
+                    "Fuzzy album match: Bandcamp '%s' ≈ Plex '%s' (artist: %s)",
                     title,
                     raw_album,
                     artist,
                 )
                 return True
         return False
+
+    def contains_track(self, artist: str, track_title: str) -> bool:
+        """Check if an individual track exists in the library."""
+        if not self._has_track_data:
+            return False
+        a = normalize(artist)
+        t = normalize(track_title)
+        if not t:
+            return False
+        tracks = self._artist_tracks.get(a, set())
+        if not tracks:
+            return False
+        if t in tracks:
+            return True
+        if len(t) >= 4:
+            for existing in tracks:
+                if t in existing or existing in t:
+                    return True
+        return False
+
+    def artist_has_tracks_matching(self, artist: str, album_title: str) -> bool:
+        """Check if an artist has tracks whose names overlap with an album title."""
+        if not self._has_track_data:
+            return False
+        a = normalize(artist)
+        tracks = self._artist_tracks.get(a, set())
+        if not tracks:
+            return False
+        title_words = tokenize(album_title)
+        if not title_words or len(title_words) < 2:
+            return False
+        matched = sum(1 for w in title_words if any(w in t for t in tracks))
+        return matched / len(title_words) >= 0.7
 
     def has_artist(self, artist: str) -> bool:
         return normalize(artist) in self._artist_raw_albums
@@ -140,10 +184,24 @@ def load_from_plex_api(url: str, token: str | None, library_name: str) -> PlexLi
     server = PlexServer(url, token or "")
     section = server.library.section(library_name)
     lib = PlexLibrary()
+
+    log.info("Loading albums from Plex...")
     for album in section.searchAlbums():
         lib.add(album.parentTitle or "", album.title or "")
+
+    log.info("Loading tracks from Plex (this may take a moment)...")
+    try:
+        for track in section.searchTracks():
+            artist = track.grandparentTitle or track.originalTitle or ""
+            lib.add_track(artist, track.title or "")
+    except Exception:
+        log.warning("Could not load tracks from Plex API; track-level matching disabled")
+
     log.info(
-        "Loaded %d album(s) from Plex library %r", lib.album_count, library_name
+        "Loaded %d album(s) and %d track(s) from Plex library %r",
+        lib.album_count,
+        lib.track_count,
+        library_name,
     )
     return lib
 
@@ -160,30 +218,18 @@ def load_from_filesystem(music_dir: Path) -> PlexLibrary:
             if not album_dir.is_dir() or album_dir.name.startswith("."):
                 continue
             lib.add(artist_dir.name, album_dir.name)
+            for f in album_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
+                    lib.add_track(
+                        artist_dir.name, _strip_track_number(f.name)
+                    )
     log.info(
-        "Loaded %d album(s) from filesystem %s", lib.album_count, music_dir
+        "Loaded %d album(s) and %d track(s) from filesystem %s",
+        lib.album_count,
+        lib.track_count,
+        music_dir,
     )
     return lib
-
-
-def scan_artist_tracks(music_dir: Path, artist: str) -> set[str]:
-    """Scan audio filenames under a single artist dir (on-demand, not at startup)."""
-    a_dir = music_dir / artist
-    if not a_dir.is_dir():
-        for candidate in music_dir.iterdir():
-            if candidate.is_dir() and normalize(candidate.name) == normalize(artist):
-                a_dir = candidate
-                break
-        else:
-            return set()
-    tracks: set[str] = set()
-    for album_dir in a_dir.iterdir():
-        if not album_dir.is_dir():
-            continue
-        for f in album_dir.iterdir():
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
-                tracks.add(normalize(_strip_track_number(f.name)))
-    return tracks
 
 
 def refresh_plex_library(url: str, token: str | None, library_name: str) -> None:

@@ -40,6 +40,7 @@ echo "==> Installing application to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
 rm -rf "${INSTALL_DIR}/src"
 cp -r "${SCRIPT_DIR}/src" "${INSTALL_DIR}/src"
+find "${INSTALL_DIR}/src" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 cp "${SCRIPT_DIR}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
 
 echo "==> Creating Python virtual environment..."
