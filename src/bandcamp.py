@@ -93,11 +93,16 @@ class BandcampClient:
             yield item
 
         token = next_token
+        empty_streak = 0
         while token:
             payload = self._fetch_page(fan_id, token)
             items = list(self._items_from_payload(payload))
             if not items:
-                break
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+            else:
+                empty_streak = 0
             for item in items:
                 if item.key in seen:
                     continue
@@ -140,14 +145,37 @@ class BandcampClient:
         redownload_urls = collection_data.get("redownload_urls") or {}
         item_cache = ((blob.get("item_cache") or {}).get("collection")) or {}
         items = list(_items_from_cache(item_cache.values(), redownload_urls))
+        item_count = collection_data.get("item_count", "?")
+        last_token = collection_data.get("last_token")
         log.info(
             "Bandcamp profile loaded: fan_id=%s, %d item(s) on first page, "
             "total=%s",
             fan_id,
             len(items),
-            collection_data.get("item_count", "?"),
+            item_count,
         )
-        return int(fan_id), items, collection_data.get("last_token")
+        if not items:
+            log.debug(
+                "Profile blob keys: %s; collection_data keys: %s; "
+                "item_cache size: %d; redownload_urls size: %d",
+                sorted(blob.keys()),
+                sorted(collection_data.keys()),
+                len(item_cache),
+                len(redownload_urls),
+            )
+        # Even when the profile page has 0 cached items (Bandcamp sometimes
+        # returns an empty initial batch), we can still paginate if there's a
+        # token or if we know items exist.
+        if not last_token and not items and item_count and item_count != "?":
+            # No token from initial page — seed with a very large timestamp so
+            # the API returns the newest items first.
+            last_token = "9999999999::a::"
+            log.info(
+                "No last_token on profile page; seeding pagination to fetch "
+                "%s item(s) via API",
+                item_count,
+            )
+        return int(fan_id), items, last_token
 
     @staticmethod
     def _items_from_payload(payload: dict) -> Iterator[CollectionItem]:
