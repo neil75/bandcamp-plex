@@ -50,25 +50,36 @@ def _filename_from_response(resp: requests.Response, url: str) -> str:
 
 
 def install_album(source: Path, music_dir: Path, artist: str, title: str) -> Path:
-    """Unzip (or move) ``source`` into ``music_dir/Artist/Album``."""
+    """Unzip (or move) ``source`` into ``music_dir/Artist/Album``.
+
+    Uses merge mode: existing files are kept, only new files are written.
+    This lets pre-release tracks stay in place when the full album drops.
+    """
     artist_dir = music_dir / safe_name(artist or "Unknown Artist")
     album_dir = artist_dir / safe_name(title or source.stem)
     album_dir.mkdir(parents=True, exist_ok=True)
 
     if zipfile.is_zipfile(source):
-        _safe_extract(source, album_dir)
-        log.info("Unzipped %s into %s", source.name, album_dir)
+        _merge_extract(source, album_dir)
     else:
         target = album_dir / source.name
-        shutil.move(str(source), str(target))
-        log.info("Installed %s into %s", source.name, album_dir)
+        if target.exists():
+            log.info("Skipping existing file: %s", source.name)
+        else:
+            shutil.move(str(source), str(target))
+            log.info("Installed %s into %s", source.name, album_dir)
     return album_dir
 
 
-def _safe_extract(zip_path: Path, album_dir: Path) -> None:
+def _merge_extract(zip_path: Path, album_dir: Path) -> None:
+    """Extract a ZIP into album_dir, skipping files that already exist."""
     album_root = album_dir.resolve()
+    new_count = 0
+    skip_count = 0
     with zipfile.ZipFile(zip_path) as zf:
         for member in zf.infolist():
+            if member.is_dir():
+                continue
             target = (album_dir / member.filename).resolve()
             try:
                 target.relative_to(album_root)
@@ -76,4 +87,18 @@ def _safe_extract(zip_path: Path, album_dir: Path) -> None:
                 raise RuntimeError(
                     f"Refusing to extract unsafe zip entry {member.filename!r}"
                 ) from exc
-        zf.extractall(album_dir)
+            if target.exists():
+                skip_count += 1
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            zf.extract(member, album_dir)
+            new_count += 1
+    if skip_count:
+        log.info(
+            "Merged into %s: %d new file(s), %d existing file(s) kept",
+            album_dir.name,
+            new_count,
+            skip_count,
+        )
+    else:
+        log.info("Extracted %d file(s) into %s", new_count, album_dir)
