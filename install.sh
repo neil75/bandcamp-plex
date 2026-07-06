@@ -38,6 +38,7 @@ fi
 
 echo "==> Installing application to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
+rm -rf "${INSTALL_DIR}/src"
 cp -r "${SCRIPT_DIR}/src" "${INSTALL_DIR}/src"
 cp "${SCRIPT_DIR}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
 
