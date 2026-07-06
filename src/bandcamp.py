@@ -94,9 +94,33 @@ class BandcampClient:
 
         token = next_token
         empty_streak = 0
+        page_num = 0
         while token:
+            page_num += 1
             payload = self._fetch_page(fan_id, token)
+            raw_items = payload.get("items") or []
+            redownload_urls = payload.get("redownload_urls") or {}
             items = list(self._items_from_payload(payload))
+            more = payload.get("more_available")
+            log.info(
+                "API page %d: %d raw item(s), %d redownload URL(s), "
+                "%d usable item(s), more_available=%s",
+                page_num,
+                len(raw_items),
+                len(redownload_urls),
+                len(items),
+                more,
+            )
+            if raw_items and not items:
+                sample = raw_items[0]
+                log.info(
+                    "Sample raw item keys: %s; sale_item_id=%s, "
+                    "sale_item_type=%s, item_id=%s",
+                    sorted(sample.keys()),
+                    sample.get("sale_item_id"),
+                    sample.get("sale_item_type"),
+                    sample.get("item_id"),
+                )
             if not items:
                 empty_streak += 1
                 if empty_streak >= 2:
@@ -108,7 +132,7 @@ class BandcampClient:
                     continue
                 seen.add(item.key)
                 yield item
-            if not payload.get("more_available"):
+            if not more:
                 break
             new_token = payload.get("last_token")
             if not new_token or new_token == token:
@@ -155,13 +179,15 @@ class BandcampClient:
             item_count,
         )
         if not items:
-            log.debug(
-                "Profile blob keys: %s; collection_data keys: %s; "
-                "item_cache size: %d; redownload_urls size: %d",
+            log.info(
+                "Profile page diagnostics — blob keys: %s; "
+                "collection_data keys: %s; item_cache entries: %d; "
+                "redownload_urls entries: %d; last_token present: %s",
                 sorted(blob.keys()),
                 sorted(collection_data.keys()),
                 len(item_cache),
                 len(redownload_urls),
+                bool(last_token),
             )
         # Even when the profile page has 0 cached items (Bandcamp sometimes
         # returns an empty initial batch), we can still paginate if there's a
