@@ -13,7 +13,8 @@ import logging
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -23,7 +24,6 @@ log = logging.getLogger(__name__)
 COLLECTION_API = "https://bandcamp.com/api/fancollection/1/collection_items"
 PAGE_SIZE = 100
 
-# Preference order when the user's preferred format isn't offered for a release.
 FALLBACK_FORMATS = (
     "flac",
     "alac",
@@ -34,6 +34,8 @@ FALLBACK_FORMATS = (
     "vorbis",
     "aac-hi",
 )
+
+_ITEM_TYPE_CHAR = {"album": "a", "track": "t"}
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,7 @@ class BandcampClient:
 
     def iter_collection(self) -> Iterator[CollectionItem]:
         """Yield every item the fan has purchased, oldest pagination last."""
-        fan_id, initial_items, next_token = self._load_profile()
+        fan_id, purchase_infos, initial_items, next_token = self._load_profile()
         seen: set[str] = set()
         for item in initial_items:
             if item.key in seen:
@@ -93,33 +95,19 @@ class BandcampClient:
             yield item
 
         token = next_token
-        empty_streak = 0
         page_num = 0
+        empty_streak = 0
         while token:
             page_num += 1
             payload = self._fetch_page(fan_id, token)
-            raw_items = payload.get("items") or []
-            redownload_urls = payload.get("redownload_urls") or {}
-            items = list(self._items_from_payload(payload))
+            items = list(_build_items_from_api(payload, purchase_infos))
             more = payload.get("more_available")
-            log.info(
-                "API page %d: %d raw item(s), %d redownload URL(s), "
-                "%d usable item(s), more_available=%s",
-                page_num,
-                len(raw_items),
-                len(redownload_urls),
-                len(items),
-                more,
-            )
-            if raw_items and not items:
-                sample = raw_items[0]
+            if page_num <= 3 or page_num % 10 == 0:
                 log.info(
-                    "Sample raw item keys: %s; sale_item_id=%s, "
-                    "sale_item_type=%s, item_id=%s",
-                    sorted(sample.keys()),
-                    sample.get("sale_item_id"),
-                    sample.get("sale_item_type"),
-                    sample.get("item_id"),
+                    "API page %d: %d usable item(s), more_available=%s",
+                    page_num,
+                    len(items),
+                    more,
                 )
             if not items:
                 empty_streak += 1
@@ -139,6 +127,8 @@ class BandcampClient:
                 break
             token = new_token
 
+        log.info("Collection enumeration complete: %d unique item(s)", len(seen))
+
     def _fetch_page(self, fan_id: int, token: str) -> dict:
         resp = self.session.post(
             COLLECTION_API,
@@ -148,7 +138,9 @@ class BandcampClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _load_profile(self) -> tuple[int, list[CollectionItem], str | None]:
+    def _load_profile(
+        self,
+    ) -> tuple[int, dict, list[CollectionItem], str | None]:
         url = f"https://bandcamp.com/{self.username}"
         resp = self.session.get(url, timeout=30)
         resp.raise_for_status()
@@ -167,66 +159,49 @@ class BandcampClient:
             )
         collection_data = blob.get("collection_data") or {}
         redownload_urls = collection_data.get("redownload_urls") or {}
+        purchase_infos = collection_data.get("purchase_infos") or {}
         item_cache = ((blob.get("item_cache") or {}).get("collection")) or {}
-        items = list(_items_from_cache(item_cache.values(), redownload_urls))
+        items = list(_build_items_from_cache(
+            item_cache.values(), redownload_urls, purchase_infos
+        ))
         item_count = collection_data.get("item_count", "?")
         last_token = collection_data.get("last_token")
         log.info(
             "Bandcamp profile loaded: fan_id=%s, %d item(s) on first page, "
-            "total=%s",
+            "total=%s, redownload_urls=%d, purchase_infos=%d",
             fan_id,
             len(items),
             item_count,
+            len(redownload_urls),
+            len(purchase_infos),
         )
-        if not items:
-            log.info(
-                "Profile page diagnostics — blob keys: %s; "
-                "collection_data keys: %s; item_cache entries: %d; "
-                "redownload_urls entries: %d; last_token present: %s",
-                sorted(blob.keys()),
-                sorted(collection_data.keys()),
-                len(item_cache),
-                len(redownload_urls),
-                bool(last_token),
-            )
-        # Even when the profile page has 0 cached items (Bandcamp sometimes
-        # returns an empty initial batch), we can still paginate if there's a
-        # token or if we know items exist.
         if not last_token and not items and item_count and item_count != "?":
-            # No token from initial page — seed with a very large timestamp so
-            # the API returns the newest items first.
             last_token = "9999999999::a::"
             log.info(
                 "No last_token on profile page; seeding pagination to fetch "
                 "%s item(s) via API",
                 item_count,
             )
-        return int(fan_id), items, last_token
-
-    @staticmethod
-    def _items_from_payload(payload: dict) -> Iterator[CollectionItem]:
-        redownload_urls = payload.get("redownload_urls") or {}
-        for raw in payload.get("items") or []:
-            item = _build_item(raw, redownload_urls)
-            if item is not None:
-                yield item
+        return int(fan_id), purchase_infos, items, last_token
 
     # -------------------------------------------------------------------- downloads
 
     def resolve_download_url(self, item: CollectionItem) -> str:
         """Return a direct download URL for ``item`` in the preferred format."""
-        resp = self.session.get(item.download_page_url, timeout=30, allow_redirects=True)
+        resp = self.session.get(
+            item.download_page_url, timeout=30, allow_redirects=True
+        )
         resp.raise_for_status()
         blob = _extract_pagedata(resp.text)
         if blob is None:
             raise RuntimeError(
                 f"Download page for {item.key} did not contain a pagedata blob"
             )
-        download_items = blob.get("download_items") or blob.get("digital_items") or []
+        download_items = (
+            blob.get("download_items") or blob.get("digital_items") or []
+        )
         if not download_items:
             raise RuntimeError(f"No download_items for {item.key}")
-        # Bandcamp's download page is always keyed to a single purchase; take the
-        # first entry but if multiple are present prefer one matching item_id.
         entry = download_items[0]
         for candidate in download_items:
             if str(candidate.get("item_id")) == str(item.item_id):
@@ -273,27 +248,61 @@ def _extract_pagedata(html: str) -> dict | None:
         return None
 
 
-def _items_from_cache(
-    raws: Iterable[dict], redownload_urls: dict
-) -> Iterator[CollectionItem]:
-    for raw in raws:
-        item = _build_item(raw, redownload_urls)
-        if item is not None:
-            yield item
+def _resolve_download_page_url(
+    raw: dict, redownload_urls: dict, purchase_infos: dict
+) -> str | None:
+    """Try every known method to get the download page URL for a raw item."""
+    sale_item_id = raw.get("sale_item_id")
+    sale_item_type = raw.get("sale_item_type") or "p"
+    lookup_key = f"{sale_item_type}{sale_item_id}"
+
+    # Method 1: classic redownload_urls map (used to work, now often empty).
+    url = redownload_urls.get(lookup_key)
+    if url:
+        return str(url)
+
+    # Method 2: purchase_infos map — newer Bandcamp pages put download info
+    # here instead of redownload_urls.
+    pinfo = purchase_infos.get(lookup_key) or purchase_infos.get(str(sale_item_id))
+    if isinstance(pinfo, dict):
+        url = pinfo.get("redownload_url") or pinfo.get("download_url")
+        if url:
+            return str(url)
+
+    # Method 3: construct from item fields. Each collection item carries
+    # enough to build the download page URL directly.
+    item_id = raw.get("item_id")
+    item_type = raw.get("item_type") or "album"
+    if sale_item_id is not None and item_id is not None:
+        type_char = _ITEM_TYPE_CHAR.get(item_type, "a")
+        params = {
+            "payment_id": sale_item_id,
+            "sig": raw.get("token") or "",
+            "sitem_id": sale_item_id,
+            "id": item_id,
+            "type": type_char,
+        }
+        return f"https://bandcamp.com/download?{urlencode(params)}"
+
+    return None
 
 
-def _build_item(raw: dict, redownload_urls: dict) -> CollectionItem | None:
+def _build_item(
+    raw: dict,
+    redownload_urls: dict,
+    purchase_infos: dict,
+) -> CollectionItem | None:
     sale_item_id = raw.get("sale_item_id")
     sale_item_type = raw.get("sale_item_type") or "p"
     item_id = raw.get("item_id")
     item_type = raw.get("item_type") or "album"
     if sale_item_id is None or item_id is None:
         return None
-    key = f"{sale_item_type}{sale_item_id}"
-    download_url = redownload_urls.get(key)
+
+    download_url = _resolve_download_page_url(raw, redownload_urls, purchase_infos)
     if not download_url:
-        # Some collection entries (e.g. free streams) have no redownload link.
         return None
+
     return CollectionItem(
         sale_item_id=str(sale_item_id),
         sale_item_type=str(sale_item_type),
@@ -301,5 +310,24 @@ def _build_item(raw: dict, redownload_urls: dict) -> CollectionItem | None:
         item_type=str(item_type),
         artist=(raw.get("band_name") or "").strip(),
         title=(raw.get("item_title") or "").strip(),
-        download_page_url=str(download_url),
+        download_page_url=download_url,
     )
+
+
+def _build_items_from_cache(
+    raws, redownload_urls: dict, purchase_infos: dict
+) -> Iterator[CollectionItem]:
+    for raw in raws:
+        item = _build_item(raw, redownload_urls, purchase_infos)
+        if item is not None:
+            yield item
+
+
+def _build_items_from_api(
+    payload: dict, purchase_infos: dict
+) -> Iterator[CollectionItem]:
+    redownload_urls = payload.get("redownload_urls") or {}
+    for raw in payload.get("items") or []:
+        item = _build_item(raw, redownload_urls, purchase_infos)
+        if item is not None:
+            yield item
