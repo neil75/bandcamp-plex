@@ -48,15 +48,38 @@ def sync_once(cfg: Config, state: State) -> int:
     # Cache artist track scans so we don't re-scan the same artist dir repeatedly.
     _artist_tracks_cache: dict[str, set[str]] = {}
 
-    def _tracks_present(artist: str, title: str) -> bool:
-        """On-demand track-level check over the network share."""
+    def _get_artist_tracks(artist: str) -> set[str]:
         a = normalize(artist)
         if a not in _artist_tracks_cache:
             _artist_tracks_cache[a] = scan_artist_tracks(cfg.music_dir, artist)
-        tracks = _artist_tracks_cache[a]
+        return _artist_tracks_cache[a]
+
+    def _track_file_exists(artist: str, track_title: str) -> bool:
+        """Check if an individual track exists as a file under the artist."""
+        tracks = _get_artist_tracks(artist)
         if not tracks:
             return False
-        title_words = tokenize(title)
+        nt = normalize(track_title)
+        if not nt:
+            return False
+        # Direct match: normalized track name matches a filename.
+        if nt in tracks:
+            return True
+        # Substring match: track name appears within a filename or vice versa
+        # (handles "Track Name" matching "01 Track Name" after stripping numbers,
+        # or "Track Name (feat. X)" matching "Track Name").
+        if len(nt) >= 4:
+            for existing in tracks:
+                if nt in existing or existing in nt:
+                    return True
+        return False
+
+    def _album_tracks_present(artist: str, album_title: str) -> bool:
+        """Check if an album's title words appear in existing track filenames."""
+        tracks = _get_artist_tracks(artist)
+        if not tracks:
+            return False
+        title_words = tokenize(album_title)
         if not title_words or len(title_words) < 2:
             return False
         matched = sum(1 for w in title_words if any(w in t for t in tracks))
@@ -66,22 +89,45 @@ def sync_once(cfg: Config, state: State) -> int:
     for item in bc.iter_collection():
         if state.has(item.key):
             continue
+
+        is_track = item.item_type == "track"
+
+        # For individual track purchases, check if the track file exists
+        # under the artist's directory rather than matching album names.
+        if is_track and plex.has_artist(item.artist):
+            if _track_file_exists(item.artist, item.title):
+                log.debug(
+                    "Track already exists: %s - %s", item.artist, item.title
+                )
+                state.mark(item.key)
+                continue
+
+        # For albums (and tracks that didn't match above), try album-level matching.
         if plex.contains(item.artist, item.title):
             log.debug("Already in Plex: %s - %s", item.artist, item.title)
             state.mark(item.key)
             continue
-        # Track-level fallback: only scan the artist dir if the artist exists
-        # in the library (avoids scanning for completely unknown artists).
-        if plex.has_artist(item.artist) and _tracks_present(item.artist, item.title):
-            log.info(
-                "Track-level match: %s - %s (tracks found under artist dir)",
-                item.artist,
-                item.title,
-            )
-            state.mark(item.key)
-            continue
 
-        log.info("Missing from Plex: %s - %s", item.artist, item.title)
+        # Fallback: scan the artist dir for track-level evidence that the
+        # content is already present under a different album name.
+        if plex.has_artist(item.artist):
+            if is_track:
+                pass  # already tried above
+            elif _album_tracks_present(item.artist, item.title):
+                log.info(
+                    "Track-level match: %s - %s (tracks found under artist dir)",
+                    item.artist,
+                    item.title,
+                )
+                state.mark(item.key)
+                continue
+
+        log.info(
+            "Missing from Plex: %s - %s [%s]",
+            item.artist,
+            item.title,
+            item.item_type,
+        )
         if cfg.dry_run:
             continue
 
