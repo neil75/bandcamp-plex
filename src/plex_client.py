@@ -94,10 +94,6 @@ class PlexLibrary:
     _artist_raw_albums: dict[str, list[str]] = field(
         default_factory=lambda: defaultdict(list)
     )
-    _artist_track_names: dict[str, set[str]] = field(
-        default_factory=lambda: defaultdict(set)
-    )
-
     def add(self, artist: str, title: str) -> None:
         a = normalize(artist)
         t = normalize(title)
@@ -106,13 +102,6 @@ class PlexLibrary:
         self._exact.add((a, t))
         self._titles.add(t)
         self._artist_raw_albums[a].append(title)
-
-    def add_track(self, artist: str, filename: str) -> None:
-        """Register an audio filename under an artist for track-level matching."""
-        a = normalize(artist)
-        name = normalize(_strip_track_number(filename))
-        if a and name:
-            self._artist_track_names[a].add(name)
 
     @property
     def album_count(self) -> int:
@@ -139,22 +128,10 @@ class PlexLibrary:
                     artist,
                 )
                 return True
-        # 4. Track-level fallback: if the artist exists and most of the album
-        #    title's words appear in existing track filenames, the content is
-        #    likely already present under a different album name.
-        title_words = tokenize(title)
-        if a in self._artist_track_names and title_words:
-            tracks = self._artist_track_names[a]
-            matched_words = {w for w in title_words if any(w in t for t in tracks)}
-            if len(title_words) > 1 and len(matched_words) / len(title_words) >= 0.7:
-                log.info(
-                    "Track-level match: '%s' by '%s' — title words found in "
-                    "existing tracks",
-                    title,
-                    artist,
-                )
-                return True
         return False
+
+    def has_artist(self, artist: str) -> bool:
+        return normalize(artist) in self._artist_raw_albums
 
 
 def load_from_plex_api(url: str, token: str | None, library_name: str) -> PlexLibrary:
@@ -164,14 +141,7 @@ def load_from_plex_api(url: str, token: str | None, library_name: str) -> PlexLi
     section = server.library.section(library_name)
     lib = PlexLibrary()
     for album in section.searchAlbums():
-        artist = album.parentTitle or ""
-        lib.add(artist, album.title or "")
-        try:
-            for track in album.tracks():
-                if track.title:
-                    lib.add_track(artist, track.title)
-        except Exception:
-            pass
+        lib.add(album.parentTitle or "", album.title or "")
     log.info(
         "Loaded %d album(s) from Plex library %r", lib.album_count, library_name
     )
@@ -190,13 +160,30 @@ def load_from_filesystem(music_dir: Path) -> PlexLibrary:
             if not album_dir.is_dir() or album_dir.name.startswith("."):
                 continue
             lib.add(artist_dir.name, album_dir.name)
-            for f in album_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
-                    lib.add_track(artist_dir.name, f.name)
     log.info(
         "Loaded %d album(s) from filesystem %s", lib.album_count, music_dir
     )
     return lib
+
+
+def scan_artist_tracks(music_dir: Path, artist: str) -> set[str]:
+    """Scan audio filenames under a single artist dir (on-demand, not at startup)."""
+    a_dir = music_dir / artist
+    if not a_dir.is_dir():
+        for candidate in music_dir.iterdir():
+            if candidate.is_dir() and normalize(candidate.name) == normalize(artist):
+                a_dir = candidate
+                break
+        else:
+            return set()
+    tracks: set[str] = set()
+    for album_dir in a_dir.iterdir():
+        if not album_dir.is_dir():
+            continue
+        for f in album_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
+                tracks.add(normalize(_strip_track_number(f.name)))
+    return tracks
 
 
 def refresh_plex_library(url: str, token: str | None, library_name: str) -> None:

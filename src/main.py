@@ -13,7 +13,10 @@ from .plex_client import (
     PlexLibrary,
     load_from_filesystem,
     load_from_plex_api,
+    normalize,
     refresh_plex_library,
+    scan_artist_tracks,
+    tokenize,
 )
 from .state import State
 
@@ -42,12 +45,39 @@ def sync_once(cfg: Config, state: State) -> int:
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
     cfg.music_dir.mkdir(parents=True, exist_ok=True)
 
+    # Cache artist track scans so we don't re-scan the same artist dir repeatedly.
+    _artist_tracks_cache: dict[str, set[str]] = {}
+
+    def _tracks_present(artist: str, title: str) -> bool:
+        """On-demand track-level check over the network share."""
+        a = normalize(artist)
+        if a not in _artist_tracks_cache:
+            _artist_tracks_cache[a] = scan_artist_tracks(cfg.music_dir, artist)
+        tracks = _artist_tracks_cache[a]
+        if not tracks:
+            return False
+        title_words = tokenize(title)
+        if not title_words or len(title_words) < 2:
+            return False
+        matched = sum(1 for w in title_words if any(w in t for t in tracks))
+        return matched / len(title_words) >= 0.7
+
     added = 0
     for item in bc.iter_collection():
         if state.has(item.key):
             continue
         if plex.contains(item.artist, item.title):
             log.debug("Already in Plex: %s - %s", item.artist, item.title)
+            state.mark(item.key)
+            continue
+        # Track-level fallback: only scan the artist dir if the artist exists
+        # in the library (avoids scanning for completely unknown artists).
+        if plex.has_artist(item.artist) and _tracks_present(item.artist, item.title):
+            log.info(
+                "Track-level match: %s - %s (tracks found under artist dir)",
+                item.artist,
+                item.title,
+            )
             state.mark(item.key)
             continue
 
