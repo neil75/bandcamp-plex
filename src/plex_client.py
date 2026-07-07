@@ -36,6 +36,8 @@ def normalize(text: str) -> str:
     text = text.lower()
     text = re.sub(r"^the\s+", "", text)
     text = re.sub(r"[\[\(][^\]\)]*[\]\)]", "", text)
+    text = text.replace("&", " and ")
+    text = EDITION_SUFFIXES.sub("", text)
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
 
@@ -95,6 +97,8 @@ class PlexLibrary:
     _artist_tracks: dict[str, set[str]] = field(
         default_factory=lambda: defaultdict(set)
     )
+    _raw_artists: dict[str, str] = field(default_factory=dict)
+    _fuzzy_artist_cache: dict[str, list[str]] = field(default_factory=dict)
     _has_track_data: bool = False
 
     def add(self, artist: str, title: str) -> None:
@@ -105,6 +109,8 @@ class PlexLibrary:
         self._exact.add((a, t))
         self._titles.add(t)
         self._artist_raw_albums[a].append(title)
+        if a and a not in self._raw_artists:
+            self._raw_artists[a] = artist
 
     def add_track(self, artist: str, track_title: str) -> None:
         a = normalize(artist)
@@ -112,6 +118,8 @@ class PlexLibrary:
         if a and t:
             self._artist_tracks[a].add(t)
             self._has_track_data = True
+            if a not in self._raw_artists:
+                self._raw_artists[a] = artist
 
     @property
     def album_count(self) -> int:
@@ -120,6 +128,30 @@ class PlexLibrary:
     @property
     def track_count(self) -> int:
         return sum(len(v) for v in self._artist_tracks.values())
+
+    def _fuzzy_artist_keys(self, artist: str) -> list[str]:
+        """Return normalized keys of Plex artists that fuzzy-match ``artist``."""
+        a = normalize(artist)
+        if a in self._fuzzy_artist_cache:
+            return self._fuzzy_artist_cache[a]
+        result = []
+        for norm_a, raw_a in self._raw_artists.items():
+            if norm_a != a and _fuzzy_match(artist, raw_a):
+                result.append(norm_a)
+        self._fuzzy_artist_cache[a] = result
+        return result
+
+    def _check_tracks_for_artist(self, norm_artist: str, norm_track: str) -> bool:
+        tracks = self._artist_tracks.get(norm_artist, set())
+        if not tracks:
+            return False
+        if norm_track in tracks:
+            return True
+        if len(norm_track) >= 4:
+            for existing in tracks:
+                if norm_track in existing or existing in norm_track:
+                    return True
+        return False
 
     def contains_album(self, artist: str, title: str) -> bool:
         a = normalize(artist)
@@ -139,6 +171,25 @@ class PlexLibrary:
                     artist,
                 )
                 return True
+        for fuzzy_a in self._fuzzy_artist_keys(artist):
+            if (fuzzy_a, t) in self._exact:
+                log.info(
+                    "Fuzzy artist match: Bandcamp '%s' ≈ Plex '%s', album: '%s'",
+                    artist,
+                    self._raw_artists.get(fuzzy_a, fuzzy_a),
+                    title,
+                )
+                return True
+            for raw_album in self._artist_raw_albums.get(fuzzy_a, []):
+                if _fuzzy_match(title, raw_album):
+                    log.info(
+                        "Fuzzy artist+album: Bandcamp '%s'≈'%s', '%s'≈'%s'",
+                        artist,
+                        self._raw_artists.get(fuzzy_a, fuzzy_a),
+                        title,
+                        raw_album,
+                    )
+                    return True
         return False
 
     def contains_track(self, artist: str, track_title: str) -> bool:
@@ -149,16 +200,25 @@ class PlexLibrary:
         t = normalize(track_title)
         if not t:
             return False
-        tracks = self._artist_tracks.get(a, set())
-        if not tracks:
-            return False
-        if t in tracks:
+        if self._check_tracks_for_artist(a, t):
             return True
-        if len(t) >= 4:
-            for existing in tracks:
-                if t in existing or existing in t:
-                    return True
+        for fuzzy_a in self._fuzzy_artist_keys(artist):
+            if self._check_tracks_for_artist(fuzzy_a, t):
+                log.info(
+                    "Fuzzy artist track match: Bandcamp '%s' ≈ Plex '%s', track: '%s'",
+                    artist,
+                    self._raw_artists.get(fuzzy_a, fuzzy_a),
+                    track_title,
+                )
+                return True
         return False
+
+    def _tracks_overlap_title(self, tracks: set[str], album_title: str) -> bool:
+        title_words = tokenize(album_title)
+        if not title_words or len(title_words) < 2:
+            return False
+        matched = sum(1 for w in title_words if any(w in t for t in tracks))
+        return matched / len(title_words) >= 0.7
 
     def artist_has_tracks_matching(self, artist: str, album_title: str) -> bool:
         """Check if an artist has tracks whose names overlap with an album title."""
@@ -166,13 +226,19 @@ class PlexLibrary:
             return False
         a = normalize(artist)
         tracks = self._artist_tracks.get(a, set())
-        if not tracks:
-            return False
-        title_words = tokenize(album_title)
-        if not title_words or len(title_words) < 2:
-            return False
-        matched = sum(1 for w in title_words if any(w in t for t in tracks))
-        return matched / len(title_words) >= 0.7
+        if tracks and self._tracks_overlap_title(tracks, album_title):
+            return True
+        for fuzzy_a in self._fuzzy_artist_keys(artist):
+            tracks = self._artist_tracks.get(fuzzy_a, set())
+            if tracks and self._tracks_overlap_title(tracks, album_title):
+                log.info(
+                    "Fuzzy artist track overlap: Bandcamp '%s' ≈ Plex '%s', album: '%s'",
+                    artist,
+                    self._raw_artists.get(fuzzy_a, fuzzy_a),
+                    album_title,
+                )
+                return True
+        return False
 
     def has_artist(self, artist: str) -> bool:
         return normalize(artist) in self._artist_raw_albums
