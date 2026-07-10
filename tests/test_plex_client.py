@@ -144,6 +144,19 @@ class TestPlexLibrary:
             "Simon and Garfunkel", "Mrs Robinson / The Boxer"
         )
 
+    def test_compilation_track_by_original_artist(self):
+        """Tracks on compilations should be findable by their original artist."""
+        lib = PlexLibrary()
+        lib.add_track("Various Artists", "I Promise (Yoruba Soul Mix)")
+        lib.add_track("Ciara", "I Promise (Yoruba Soul Mix)")
+        assert lib.contains_track("Ciara", "I Promise (Yoruba Soul Mix)")
+
+    def test_compilation_track_not_found_without_original(self):
+        """Without the original artist index, compilation tracks are missed."""
+        lib = PlexLibrary()
+        lib.add_track("Various Artists", "I Promise (Yoruba Soul Mix)")
+        assert not lib.contains_track("Ciara", "I Promise (Yoruba Soul Mix)")
+
 
 if __name__ == "__main__":
     import pytest

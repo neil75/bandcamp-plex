@@ -259,7 +259,11 @@ def load_from_plex_api(url: str, token: str | None, library_name: str) -> PlexLi
     try:
         for track in section.searchTracks():
             artist = track.grandparentTitle or track.originalTitle or ""
-            lib.add_track(artist, track.title or "")
+            title = track.title or ""
+            lib.add_track(artist, title)
+            original = getattr(track, "originalTitle", None) or ""
+            if original and original != artist:
+                lib.add_track(original, title)
     except Exception:
         log.warning("Could not load tracks from Plex API; track-level matching disabled")
 
