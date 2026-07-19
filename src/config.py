@@ -23,6 +23,7 @@ class Config:
     state_file: Path
     check_interval: int
     dry_run: bool
+    approval_mode: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -56,4 +57,5 @@ class Config:
             ),
             check_interval=int(os.environ.get("CHECK_INTERVAL", "3600")),
             dry_run=_bool(os.environ.get("DRY_RUN")),
+            approval_mode=_bool(os.environ.get("APPROVAL_MODE")),
         )
